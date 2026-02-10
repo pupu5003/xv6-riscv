@@ -107,3 +107,15 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_getprocs(void)
+{
+  uint64 addr;
+  int max;
+
+  argaddr(0, &addr); //  1st arg: pointer to procinfo array (user virtual address)
+  argint(1, &max); // 2nd arg: maximum number of processes to return
+
+  return getprocs(addr, max); // call getprocs in proc.c to get information about processes
+}
