@@ -126,6 +126,33 @@ static char *syscall_names[] = {
     [SYS_trace] "trace",
 };
 
+// Number of arguments for each system call.
+static int syscall_nargs[] = {
+    [SYS_fork] 0,
+    [SYS_exit] 1,
+    [SYS_wait] 1,
+    [SYS_pipe] 1,
+    [SYS_read] 3,
+    [SYS_kill] 1,
+    [SYS_exec] 2,
+    [SYS_fstat] 2,
+    [SYS_chdir] 1,
+    [SYS_dup] 1,
+    [SYS_getpid] 0,
+    [SYS_sbrk] 2,
+    [SYS_pause] 1,
+    [SYS_uptime] 0,
+    [SYS_open] 2,
+    [SYS_write] 3,
+    [SYS_mknod] 3,
+    [SYS_unlink] 1,
+    [SYS_link] 2,
+    [SYS_mkdir] 1,
+    [SYS_close] 1,
+    [SYS_getprocs] 2,
+    [SYS_trace] 1,
+};
+
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
 static uint64 (*syscalls[])(void) = {
@@ -162,6 +189,28 @@ void syscall(void)
   num = p->trapframe->a7;
   if (num > 0 && num < NELEM(syscalls) && syscalls[num])
   {
+    // Save arguments BEFORE the syscall executes, because a0 will be
+    // overwritten with the return value.
+    uint64 saved_args[6];
+    int nargs = 0;
+    // if ((p->trace_mask & (1 << num)) != 0)
+    // {
+    //   nargs = syscall_nargs[num];
+    //   saved_args[0] = p->trapframe->a0;
+    //   saved_args[1] = p->trapframe->a1;
+    //   saved_args[2] = p->trapframe->a2;
+    //   saved_args[3] = p->trapframe->a3;
+    //   saved_args[4] = p->trapframe->a4;
+    //   saved_args[5] = p->trapframe->a5;
+    // }
+    nargs = syscall_nargs[num];
+    saved_args[0] = p->trapframe->a0;
+    saved_args[1] = p->trapframe->a1;
+    saved_args[2] = p->trapframe->a2;
+    saved_args[3] = p->trapframe->a3;
+    saved_args[4] = p->trapframe->a4;
+    saved_args[5] = p->trapframe->a5;
+
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();
@@ -169,8 +218,14 @@ void syscall(void)
     // Print trace if this syscall is being traced
     if ((p->trace_mask & (1 << num)) != 0)
     {
-      printf("%d: syscall %s -> %d\n",
-             p->pid, syscall_names[num], (int)p->trapframe->a0);
+      printf("%d: syscall %s(", p->pid, syscall_names[num]);
+      for (int i = 0; i < nargs; i++)
+      {
+        if (i > 0)
+          printf(", ");
+        printf("%d", (int)saved_args[i]);
+      }
+      printf(") -> %d\n", (int)p->trapframe->a0);
     }
   }
   else
