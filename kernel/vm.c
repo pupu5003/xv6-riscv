@@ -7,11 +7,22 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "vm.h"
 
 /*
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
+struct {
+  uint64 pa;              // Physical address of the shared page
+  int refcount;           // Reference count
+  struct spinlock lock;   // Lock to protect access
+  int allocated;          // Whether the page is allocated
+} shmem_page;
+
+
+// Define a specific region for shared memory
+#define SHMEM_REGION 0x4000000  // 64MB mark
 
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
@@ -203,10 +214,31 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       continue;   
     if((*pte & PTE_V) == 0)  // has physical page been allocated?
       continue;
+    // if(do_free){
+    //   uint64 pa = PTE2PA(*pte);
+    //   kfree((void*)pa);
+    // }
+
     if(do_free){
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      
+      if(a == SHMEM_REGION){
+        acquire(&shmem_page.lock);
+        shmem_page.refcount--;
+        
+        // If this was the last reference to the shared page, free it
+        if(shmem_page.refcount == 0){
+          kfree((void*)shmem_page.pa);
+          shmem_page.pa = 0;
+          shmem_page.allocated = 0;
+        }
+        release(&shmem_page.lock);
+      } else {
+        // Normal operation for pages that are not shared
+        kfree((void*)pa);
+      }
     }
+
     *pte = 0;
   }
 }
@@ -316,6 +348,20 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       goto err;
     }
   }
+
+  pte = walk(old, SHMEM_REGION, 0);
+  if(pte != 0 && (*pte & PTE_V)){
+    // Nếu có, map cùng một trang vật lý đó sang cho tiến trình con [cite: 171]
+    if(mappages(new, SHMEM_REGION, PGSIZE, shmem_page.pa, PTE_R|PTE_W|PTE_U) < 0) {
+      goto err;
+    }
+    
+    // Tăng reference count vì thêm một tiến trình (con) sử dụng [cite: 172]
+    acquire(&shmem_page.lock);
+    shmem_page.refcount++;
+    release(&shmem_page.lock);
+  }
+
   return 0;
 
  err:
@@ -484,3 +530,81 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
+
+void
+init_shmem(void)
+{
+  initlock(&shmem_page.lock, "shmem");
+  shmem_page.allocated = 0;
+  shmem_page.refcount = 0;
+  shmem_page.pa = 0;
+}
+
+// [cite: 150-158]
+uint64
+mmap(void)
+{
+  struct proc *p = myproc();
+
+  acquire(&shmem_page.lock);
+
+  // if shared page is not allocated, allocate it and initialize
+  if (shmem_page.allocated == 0) {
+    shmem_page.pa = (uint64)kalloc();
+    if (shmem_page.pa == 0) {
+      release(&shmem_page.lock);
+      return 0;
+    }
+    memset((void*)shmem_page.pa, 0, PGSIZE);
+    shmem_page.allocated = 1;
+    shmem_page.refcount = 0;
+  }
+
+  // Map into the current process's page table 
+  if (mappages(p->pagetable, SHMEM_REGION, PGSIZE, shmem_page.pa, PTE_R|PTE_W|PTE_U) < 0) {
+    if (shmem_page.refcount == 0) {
+      kfree((void*)shmem_page.pa);
+      shmem_page.allocated = 0;
+    }
+    release(&shmem_page.lock);
+    return 0;
+  }
+
+  shmem_page.refcount++; // [cite: 154]
+  release(&shmem_page.lock);
+
+  return SHMEM_REGION; // [cite: 158]
+}
+
+uint64
+munmap(uint64 va)
+{
+  struct proc *p = myproc();
+
+  if (va != SHMEM_REGION) return -1; // [cite: 161]
+
+  // Check if the page is mapped in the process's page table [cite: 162]
+  pte_t *pte = walk(p->pagetable, va, 0);
+  if (pte == 0 || (*pte & PTE_V) == 0) return -1;
+
+  // Unmap the page from the process's page table 
+  uvmunmap(p->pagetable, va, 1, 0); 
+
+  acquire(&shmem_page.lock);
+  shmem_page.refcount--; 
+
+  // If no one is using it, free the physical page
+  if (shmem_page.refcount == 0) {
+    kfree((void*)shmem_page.pa);
+    shmem_page.pa = 0;
+    shmem_page.allocated = 0;
+  }
+  release(&shmem_page.lock);
+
+  return 0;
+}
+
+
+
+
+

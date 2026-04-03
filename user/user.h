@@ -50,3 +50,9 @@ void printf(const char *, ...) __attribute__((format(printf, 1, 2)));
 // umalloc.c
 void *malloc(uint);
 void free(void *);
+
+// mmap.c
+uint64 mmap(void);
+
+// munmap.c
+uint64 munmap(uint64);
