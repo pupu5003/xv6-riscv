@@ -218,8 +218,10 @@ void proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  shmem_proc_cleanup(pagetable);  // clean up any lingering shmem mappings
   uvmfree(pagetable, sz);
 }
+
 
 // Set up first user process.
 void userinit(void)

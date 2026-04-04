@@ -185,9 +185,9 @@ void            virtio_disk_intr(void);
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
 
-// shmem.c
+// vm.c - shared memory (advanced linked-list implementation)
 void            init_shmem(void);
-uint64          sys_mmap(void);
-uint64          sys_munmap(void);
-uint64          mmap(void);
+uint64          mmap(int prot, int id);
 uint64          munmap(uint64 va);
+void            shmem_proc_cleanup(pagetable_t);
+

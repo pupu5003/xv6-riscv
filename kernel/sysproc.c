@@ -138,7 +138,10 @@ sys_trace(void)
 uint64
 sys_mmap(void)
 {
-  return mmap();
+  int prot, id;
+  argint(0, &prot);
+  argint(1, &id);
+  return mmap(prot, id);
 }
 
 uint64
@@ -146,10 +149,6 @@ sys_munmap(void)
 {
   uint64 va;
   argaddr(0, &va);
-  if (va != 0x4000000) { 
-    return -1; 
-  }
-    
   return munmap(va);
 }
 
