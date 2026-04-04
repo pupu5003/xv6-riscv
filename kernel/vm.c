@@ -20,7 +20,6 @@ struct {
   int allocated;          // Whether the page is allocated
 } shmem_page;
 
-
 // Define a specific region for shared memory
 #define SHMEM_REGION 0x4000000  // 64MB mark
 
@@ -351,12 +350,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   pte = walk(old, SHMEM_REGION, 0);
   if(pte != 0 && (*pte & PTE_V)){
-    // Nếu có, map cùng một trang vật lý đó sang cho tiến trình con [cite: 171]
+    // If has, map same physical page to child process
     if(mappages(new, SHMEM_REGION, PGSIZE, shmem_page.pa, PTE_R|PTE_W|PTE_U) < 0) {
       goto err;
     }
     
-    // Tăng reference count vì thêm một tiến trình (con) sử dụng [cite: 172]
+    // Increase reference count because one more process (child) uses
     acquire(&shmem_page.lock);
     shmem_page.refcount++;
     release(&shmem_page.lock);
@@ -531,6 +530,7 @@ ismapped(pagetable_t pagetable, uint64 va)
   return 0;
 }
 
+
 void
 init_shmem(void)
 {
@@ -540,7 +540,7 @@ init_shmem(void)
   shmem_page.pa = 0;
 }
 
-// [cite: 150-158]
+
 uint64
 mmap(void)
 {
@@ -570,10 +570,10 @@ mmap(void)
     return 0;
   }
 
-  shmem_page.refcount++; // [cite: 154]
+  shmem_page.refcount++;
   release(&shmem_page.lock);
 
-  return SHMEM_REGION; // [cite: 158]
+  return SHMEM_REGION;
 }
 
 uint64
@@ -581,9 +581,9 @@ munmap(uint64 va)
 {
   struct proc *p = myproc();
 
-  if (va != SHMEM_REGION) return -1; // [cite: 161]
+  if (va != SHMEM_REGION) return -1; 
 
-  // Check if the page is mapped in the process's page table [cite: 162]
+  // Check if the page is mapped in the process's page table
   pte_t *pte = walk(p->pagetable, va, 0);
   if (pte == 0 || (*pte & PTE_V) == 0) return -1;
 
