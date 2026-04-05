@@ -146,10 +146,6 @@ sys_munmap(void)
 {
   uint64 va;
   argaddr(0, &va);
-  if (va != 0x4000000) { 
-    return -1; 
-  }
-    
   return munmap(va);
 }
 

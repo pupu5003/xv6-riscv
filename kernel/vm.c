@@ -13,13 +13,7 @@
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
-struct
-{
-  uint64 pa;            // Physical address of the shared page
-  int refcount;         // Reference count
-  struct spinlock lock; // Lock to protect access
-  int allocated;        // Whether the page is allocated
-} shmem_page;
+// shmem_page (basic version) removed; use shmem_table below for advanced multi-region support
 
 #define MAX_SHMEM 16 // Limit the number of shared memory regions
 #define SHMEM_START 0x4000000
@@ -241,19 +235,24 @@ void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     {
       uint64 pa = PTE2PA(*pte);
 
-      if (a == SHMEM_REGION)
+      // Check if 'a' falls in the advanced shared memory region
+      if (a >= SHMEM_START && a < SHMEM_START + (MAX_SHMEM * PGSIZE) && (a % PGSIZE) == 0)
       {
-        acquire(&shmem_page.lock);
-        shmem_page.refcount--;
+        int idx = (a - SHMEM_START) / PGSIZE;
+        struct shmem_region *sr = &shmem_table.regions[idx];
 
-        // If this was the last reference to the shared page, free it
-        if (shmem_page.refcount == 0)
-        {
-          kfree((void *)shmem_page.pa);
-          shmem_page.pa = 0;
-          shmem_page.allocated = 0;
+        acquire(&sr->lock);
+        if (sr->allocated) {
+          sr->refcount--;
+          if (sr->refcount == 0)
+          {
+            kfree((void *)sr->pa);
+            sr->pa = 0;
+            sr->allocated = 0;
+          }
         }
-        release(&shmem_page.lock);
+        release(&sr->lock);
+        // Do NOT kfree(pa) here — shmem_table manages the physical page
       }
       else
       {
@@ -339,12 +338,31 @@ void freewalk(pagetable_t pagetable)
   kfree((void *)pagetable);
 }
 
+// Unmap any shared memory regions this process has mapped.
+// Called by uvmfree before freewalk so the page table is still intact.
+static void
+uvmunmap_shmem(pagetable_t pagetable)
+{
+  for (int i = 0; i < MAX_SHMEM; i++)
+  {
+    uint64 va = SHMEM_START + (i * PGSIZE);
+    pte_t *pte = walk(pagetable, va, 0);
+    if (pte && (*pte & PTE_V))
+    {
+      // unmap with do_free=1 so uvmunmap decrements the shmem_table refcount
+      uvmunmap(pagetable, va, 1, 1);
+    }
+  }
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void uvmfree(pagetable_t pagetable, uint64 sz)
 {
   if (sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz) / PGSIZE, 1);
+  // Clean up any advanced shared memory regions before freeing page tables
+  uvmunmap_shmem(pagetable);
   freewalk(pagetable);
 }
 
@@ -677,6 +695,7 @@ void init_shmem(void)
     initlock(&shmem_table.regions[i].lock, "shmem_region");
     shmem_table.regions[i].allocated = 0;
     shmem_table.regions[i].refcount = 0;
+    shmem_table.regions[i].pa = 0;
   }
 }
 
