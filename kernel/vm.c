@@ -13,27 +13,31 @@
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
-// shmem_page (basic version) removed; use shmem_table below for advanced multi-region support
+// ============================================================
+// Linked-list shared memory system (Advanced section)
+// ============================================================
 
-#define MAX_SHMEM 16 // Limit the number of shared memory regions
-#define SHMEM_START 0x4000000
+#define SHMEM_BASE      0x4000000  // Base virtual address for shared memory regions
+#define MAX_SHMEM_NODES 16         // Maximum concurrent shared memory regions
 
-struct shmem_region
-{
-  uint64 pa;            // Physical address
-  int refcount;         // Reference count
-  int allocated;        // Whether the page is allocated
-  struct spinlock lock; // Lock to protect access
+// Per-region tracking node — element of the active linked list
+struct shmem_region {
+  uint64 va;                  // Virtual address where this region is mapped
+  uint64 pa;                  // Physical address of the shared page
+  int    refcount;            // Number of processes currently mapping this region
+  int    size;                // Size in pages (currently always 1)
+  struct shmem_region *next;  // Next node in the list (NULL = end)
 };
 
-struct
-{
-  struct spinlock lock;
-  struct shmem_region regions[MAX_SHMEM];
-} shmem_table;
+// Global system state: one spinlock protects the entire linked list
+static struct {
+  struct spinlock      lock;
+  struct shmem_region *regions;  // Head of the active regions linked list
+} shmem_system;
 
-// Define a specific region for shared memory
-#define SHMEM_REGION 0x4000000 // 64MB mark
+// Static node pool — xv6 kernel has no heap allocator
+static struct shmem_region node_pool[MAX_SHMEM_NODES];
+static struct shmem_region *free_nodes;  // Head of the free-node list
 
 extern char etext[]; // kernel.ld sets this to end of kernel code.
 
@@ -234,31 +238,7 @@ void uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     if (do_free)
     {
       uint64 pa = PTE2PA(*pte);
-
-      // Check if 'a' falls in the advanced shared memory region
-      if (a >= SHMEM_START && a < SHMEM_START + (MAX_SHMEM * PGSIZE) && (a % PGSIZE) == 0)
-      {
-        int idx = (a - SHMEM_START) / PGSIZE;
-        struct shmem_region *sr = &shmem_table.regions[idx];
-
-        acquire(&sr->lock);
-        if (sr->allocated) {
-          sr->refcount--;
-          if (sr->refcount == 0)
-          {
-            kfree((void *)sr->pa);
-            sr->pa = 0;
-            sr->allocated = 0;
-          }
-        }
-        release(&sr->lock);
-        // Do NOT kfree(pa) here — shmem_table manages the physical page
-      }
-      else
-      {
-        // Normal operation for pages that are not shared
-        kfree((void *)pa);
-      }
+      kfree((void *)pa);
     }
 
     *pte = 0;
@@ -338,21 +318,38 @@ void freewalk(pagetable_t pagetable)
   kfree((void *)pagetable);
 }
 
-// Unmap any shared memory regions this process has mapped.
+// Traverse the active regions linked list and unmap any regions this process has
+// mapped. Decrements refcount per region; frees physical page when refcount -> 0.
 // Called by uvmfree before freewalk so the page table is still intact.
 static void
 uvmunmap_shmem(pagetable_t pagetable)
 {
-  for (int i = 0; i < MAX_SHMEM; i++)
+  acquire(&shmem_system.lock);
+
+  struct shmem_region **pp = &shmem_system.regions;
+  while (*pp)
   {
-    uint64 va = SHMEM_START + (i * PGSIZE);
-    pte_t *pte = walk(pagetable, va, 0);
+    struct shmem_region *r = *pp;
+    pte_t *pte = walk(pagetable, r->va, 0);
     if (pte && (*pte & PTE_V))
     {
-      // unmap with do_free=1 so uvmunmap decrements the shmem_table refcount
-      uvmunmap(pagetable, va, 1, 1);
+      *pte = 0;        // Clear the PTE for this process
+      r->refcount--;
+      if (r->refcount == 0)
+      {
+        *pp = r->next; // Unlink from active list
+        kfree((void *)r->pa);
+        // Return node to free pool
+        r->va = 0; r->pa = 0; r->refcount = 0; r->size = 0;
+        r->next = free_nodes;
+        free_nodes = r;
+        continue;      // *pp already points to the former r->next
+      }
     }
+    pp = &r->next;
   }
+
+  release(&shmem_system.lock);
 }
 
 // Free user memory pages,
@@ -410,24 +407,23 @@ int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   //   release(&shmem_page.lock);
   // }
 
-  for (int i = 0; i < MAX_SHMEM; i++)
+  // Propagate shared memory: traverse list, map same physical page into child
+  acquire(&shmem_system.lock);
+  for (struct shmem_region *r = shmem_system.regions; r; r = r->next)
   {
-    uint64 va = SHMEM_START + (i * PGSIZE);
-    pte_t *pte = walk(old, va, 0);
-
+    pte_t *pte = walk(old, r->va, 0);
     if (pte && (*pte & PTE_V))
     {
-      // If it is a shared memory region, map the same physical page to the child process and increase the reference count
-      uint64 pa = PTE2PA(*pte);
       uint flags = PTE_FLAGS(*pte);
-      if (mappages(new, va, PGSIZE, pa, flags) < 0)
+      if (mappages(new, r->va, (uint64)r->size * PGSIZE, r->pa, flags) < 0)
+      {
+        release(&shmem_system.lock);
         goto err;
-
-      acquire(&shmem_table.regions[i].lock);
-      shmem_table.regions[i].refcount++;
-      release(&shmem_table.regions[i].lock);
+      }
+      r->refcount++;
     }
   }
+  release(&shmem_system.lock);
 
   return 0;
 
@@ -686,16 +682,67 @@ munmap(uint64 va)
 }
 
 */
-// Initialize the shared memory table
+// Initialize the linked-list shared memory system.
+// Called once from main() at boot.
 void init_shmem(void)
 {
-  initlock(&shmem_table.lock, "shmem_table");
-  for (int i = 0; i < MAX_SHMEM; i++)
+  initlock(&shmem_system.lock, "shmem_system");
+  shmem_system.regions = 0;
+
+  // Build the free-node list from the static pool
+  free_nodes = 0;
+  for (int i = 0; i < MAX_SHMEM_NODES; i++)
   {
-    initlock(&shmem_table.regions[i].lock, "shmem_region");
-    shmem_table.regions[i].allocated = 0;
-    shmem_table.regions[i].refcount = 0;
-    shmem_table.regions[i].pa = 0;
+    node_pool[i].next = free_nodes;
+    free_nodes = &node_pool[i];
+  }
+}
+
+// Helper (called with shmem_system.lock held): find a free virtual address
+// by scanning the active list for gaps starting from SHMEM_BASE.
+static uint64
+shmem_find_free_va(void)
+{
+  for (int i = 0; i < MAX_SHMEM_NODES; i++)
+  {
+    uint64 candidate = SHMEM_BASE + (uint64)i * PGSIZE;
+    int taken = 0;
+    for (struct shmem_region *r = shmem_system.regions; r; r = r->next)
+    {
+      if (r->va == candidate) { taken = 1; break; }
+    }
+    if (!taken) return candidate;
+  }
+  return 0; // No free VA slot
+}
+
+// Helper (called with shmem_system.lock held): look up a region by VA.
+static struct shmem_region *
+shmem_find_by_va(uint64 va)
+{
+  for (struct shmem_region *r = shmem_system.regions; r; r = r->next)
+    if (r->va == va) return r;
+  return 0;
+}
+
+// Helper (called with shmem_system.lock held): unlink a node from the
+// active list and return it to the free pool.
+static void
+shmem_list_remove(struct shmem_region *target)
+{
+  struct shmem_region **pp = &shmem_system.regions;
+  while (*pp)
+  {
+    if (*pp == target)
+    {
+      *pp = target->next;
+      target->va = 0; target->pa = 0;
+      target->refcount = 0; target->size = 0;
+      target->next = free_nodes;
+      free_nodes = target;
+      return;
+    }
+    pp = &(*pp)->next;
   }
 }
 
@@ -703,56 +750,49 @@ uint64
 mmap(void)
 {
   struct proc *p = myproc();
-  int i;
-  struct shmem_region *sr = 0;
 
-  acquire(&shmem_table.lock);
-  // Find an empty region in the management table
-  for (i = 0; i < MAX_SHMEM; i++)
-  {
-    if (shmem_table.regions[i].allocated == 0)
-    {
-      sr = &shmem_table.regions[i];
-      break;
-    }
-  }
+  acquire(&shmem_system.lock);
 
-  if (sr == 0)
-  {
-    release(&shmem_table.lock);
-    return 0; // No empty region available
-  }
+  // 1. Find a free virtual address slot
+  uint64 va = shmem_find_free_va();
+  if (va == 0) { release(&shmem_system.lock); return 0; }
 
-  acquire(&sr->lock);
-  // Allocate physical page if it's the first time
+  // 2. Get a free node from the pool
+  if (free_nodes == 0) { release(&shmem_system.lock); return 0; }
+  struct shmem_region *sr = free_nodes;
+  free_nodes = free_nodes->next;
+
+  // 3. Allocate a physical page
   sr->pa = (uint64)kalloc();
   if (sr->pa == 0)
   {
-    release(&sr->lock);
-    release(&shmem_table.lock);
+    sr->next = free_nodes; free_nodes = sr; // return node
+    release(&shmem_system.lock);
     return 0;
   }
   memset((void *)sr->pa, 0, PGSIZE);
-  sr->allocated = 1;
-  sr->refcount = 1; // Initial refcount
-  release(&sr->lock);
-  release(&shmem_table.lock);
+  sr->va       = va;
+  sr->refcount = 1;
+  sr->size     = 1;
 
-  // Calculate virtual address based on index
-  uint64 va = SHMEM_START + (i * PGSIZE);
+  // 4. Insert at head of active list (reserves va before releasing lock)
+  sr->next = shmem_system.regions;
+  shmem_system.regions = sr;
 
-  // Map page table of process with R, W, U permissions
+  release(&shmem_system.lock);
+
+  // 5. Map into the calling process's page table
   if (mappages(p->pagetable, va, PGSIZE, sr->pa, PTE_R | PTE_W | PTE_U) < 0)
   {
-    acquire(&sr->lock);
-    kfree((void *)sr->pa);
-    sr->allocated = 0;
-    sr->refcount = 0;
-    release(&sr->lock);
+    acquire(&shmem_system.lock);
+    uint64 pa_to_free = sr->pa;  // save before list_remove zeros it
+    shmem_list_remove(sr);       // unlinks node and returns it to free pool
+    kfree((void *)pa_to_free);   // free physical page after node is recycled
+    release(&shmem_system.lock);
     return 0;
   }
 
-  return va; // Return virtual address that has mapped
+  return va;
 }
 
 uint64
@@ -760,32 +800,34 @@ munmap(uint64 va)
 {
   struct proc *p = myproc();
 
-  // Check if va is valid in the allowed address range
-  if (va < SHMEM_START || va >= SHMEM_START + (MAX_SHMEM * PGSIZE) || va % PGSIZE != 0)
-    return -1;
+  // va must be page-aligned
+  if (va % PGSIZE != 0) return -1;
 
-  int idx = (va - SHMEM_START) / PGSIZE;
-  struct shmem_region *sr = &shmem_table.regions[idx];
-
-  // Check if the page is actually mapped in the process
+  // Check that the PTE is present in this process's page table
   pte_t *pte = walk(p->pagetable, va, 0);
-  if (pte == 0 || (*pte & PTE_V) == 0)
-    return -1;
+  if (pte == 0 || (*pte & PTE_V) == 0) return -1;
 
-  // Remove mapping from page table
-  uvmunmap(p->pagetable, va, 1, 0);
+  acquire(&shmem_system.lock);
 
-  acquire(&sr->lock);
-  sr->refcount--; // Decrease refcount
+  // Look up the region by virtual address in the linked list
+  struct shmem_region *sr = shmem_find_by_va(va);
+  if (sr == 0)
+  {
+    release(&shmem_system.lock);
+    return -1;  // Not a shared memory address
+  }
 
-  // If no process is using it, free the physical page
+  // Clear the PTE (removes the mapping from this process)
+  *pte = 0;
+
+  sr->refcount--;
   if (sr->refcount == 0)
   {
+    // Last reference: free physical page and remove node from list
     kfree((void *)sr->pa);
-    sr->pa = 0;
-    sr->allocated = 0;
+    shmem_list_remove(sr);  // unlinks and returns node to free pool
   }
-  release(&sr->lock);
 
-  return 0; // Success
+  release(&shmem_system.lock);
+  return 0;
 }
