@@ -443,6 +443,7 @@ void scheduler(void)
   struct proc *p;
   struct cpu *c = mycpu();
 
+  //controller vô đây ròi bóc ra các process, rồi chạy vòng lặp for
   c->proc = 0;
   for (;;)
   {

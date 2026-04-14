@@ -202,15 +202,15 @@ uvmcreate()
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
-  uint64 a;
-  pte_t *pte;
+  uint64 a; // virtual address
+  pte_t *pte; // page table entry pointer
 
-  if((va % PGSIZE) != 0)
+  if((va % PGSIZE) != 0) // virtual address must be page-aligned
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0) // leaf page table entry allocated?
-      continue;   
+    if((pte = walk(pagetable, a, 0)) == 0) // page table entry doesn't exist, walk() returns pte pointer or 0 if not mapped
+      continue;   // if not mapped, nothing to unmap, continue to next page
     if((*pte & PTE_V) == 0)  // has physical page been allocated?
       continue;
     // if(do_free){
@@ -238,7 +238,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       }
     }
 
-    *pte = 0;
+    *pte = 0; // unmap the page by clearing the PTE
   }
 }
 
@@ -551,22 +551,22 @@ mmap(void)
   // if shared page is not allocated, allocate it and initialize
   if (shmem_page.allocated == 0) {
     shmem_page.pa = (uint64)kalloc();
-    if (shmem_page.pa == 0) {
-      release(&shmem_page.lock);
+    if (shmem_page.pa == 0) { // allocation failed
+      release(&shmem_page.lock); // release lock before returning
       return 0;
     }
-    memset((void*)shmem_page.pa, 0, PGSIZE);
-    shmem_page.allocated = 1;
-    shmem_page.refcount = 0;
+    memset((void*)shmem_page.pa, 0, PGSIZE); // initialize the page to zero
+    shmem_page.allocated = 1; // mark as allocated
+    shmem_page.refcount = 0; // initialize reference count
   }
 
   // Map into the current process's page table 
-  if (mappages(p->pagetable, SHMEM_REGION, PGSIZE, shmem_page.pa, PTE_R|PTE_W|PTE_U) < 0) {
+  if (mappages(p->pagetable, SHMEM_REGION, PGSIZE, shmem_page.pa, PTE_R|PTE_W|PTE_U) < 0) { // mapping failed
     if (shmem_page.refcount == 0) {
-      kfree((void*)shmem_page.pa);
-      shmem_page.allocated = 0;
+      kfree((void*)shmem_page.pa); // free the physical page if no one is using it
+      shmem_page.allocated = 0; // mark as not allocated
     }
-    release(&shmem_page.lock);
+    release(&shmem_page.lock); // release lock before returning
     return 0;
   }
 
@@ -581,11 +581,11 @@ munmap(uint64 va)
 {
   struct proc *p = myproc();
 
-  if (va != SHMEM_REGION) return -1; 
+  if (va != SHMEM_REGION) return -1; // Invalid address
 
   // Check if the page is mapped in the process's page table
-  pte_t *pte = walk(p->pagetable, va, 0);
-  if (pte == 0 || (*pte & PTE_V) == 0) return -1;
+  pte_t *pte = walk(p->pagetable, va, 0); // Get the PTE for the given virtual address
+  if (pte == 0 || (*pte & PTE_V) == 0) return -1; // Not mapped
 
   // Unmap the page from the process's page table 
   uvmunmap(p->pagetable, va, 1, 0); 

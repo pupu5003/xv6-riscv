@@ -11,7 +11,7 @@ main(int argc, char *argv[])
   printf("Testing mmap shared memory...\n");
 
   // Map shared memory
-  shared_addr = mmap();
+  shared_addr = mmap(); // returns the virtual address of the mapped shared memory, or 0 on failure
   if(shared_addr == 0){
     printf("mmap failed\n");
     exit(1);
@@ -26,7 +26,7 @@ main(int argc, char *argv[])
   printf("Parent wrote: %d\n", *shared_data);
 
   // Fork a child process
-  pid = fork();
+  pid = fork(); // returns 0 in child, child's PID in parent, or -1 on failure
   if(pid < 0){
     printf("fork failed\n");
     exit(1);
@@ -49,7 +49,7 @@ main(int argc, char *argv[])
     exit(0);
   } else {
     // Parent process
-    wait(0);
+    wait(0); // wait for child to finish
 
     // Verify the child's modification is visible
     printf("Parent read after child: %d\n", *shared_data);
