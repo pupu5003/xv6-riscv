@@ -337,18 +337,18 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       continue;   // page table entry hasn't been allocated
     if((*pte & PTE_V) == 0)
       continue;   // physical page hasn't been allocated
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    pa = PTE2PA(*pte); // physical address of the page to copy
+    flags = PTE_FLAGS(*pte); // permissions of the page
+    if((mem = kalloc()) == 0) // allocate a new physical page for the child process
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    memmove(mem, (char*)pa, PGSIZE); // copy the contents of the parent's page to the child's page
+    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){ // map the new page into the child's page table with the same permissions
       kfree(mem);
       goto err;
     }
   }
 
-  pte = walk(old, SHMEM_REGION, 0);
+  pte = walk(old, SHMEM_REGION, 0); // check if the parent process has mapped the shared memory page
   if(pte != 0 && (*pte & PTE_V)){
     // If has, map same physical page to child process
     if(mappages(new, SHMEM_REGION, PGSIZE, shmem_page.pa, PTE_R|PTE_W|PTE_U) < 0) {
