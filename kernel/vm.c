@@ -705,8 +705,8 @@ shmem_find_free_va(void)
 {
   for (int i = 0; i < MAX_SHMEM_NODES; i++)
   {
-    uint64 candidate = SHMEM_BASE + (uint64)i * PGSIZE;
-    int taken = 0;
+    uint64 candidate = SHMEM_BASE + (uint64)i * PGSIZE; // addr for the i'th node
+    int taken = 0; // Scan active list to see if candidate VA is already taken
     for (struct shmem_region *r = shmem_system.regions; r; r = r->next)
     {
       if (r->va == candidate) { taken = 1; break; }
@@ -736,8 +736,10 @@ shmem_list_remove(struct shmem_region *target)
     if (*pp == target)
     {
       *pp = target->next;
-      target->va = 0; target->pa = 0;
-      target->refcount = 0; target->size = 0;
+      target->va = 0; 
+      target->pa = 0;
+      target->refcount = 0; 
+      target->size = 0;
       target->next = free_nodes;
       free_nodes = target;
       return;
@@ -755,10 +757,16 @@ mmap(void)
 
   // 1. Find a free virtual address slot
   uint64 va = shmem_find_free_va();
-  if (va == 0) { release(&shmem_system.lock); return 0; }
+  if (va == 0) { 
+    release(&shmem_system.lock); 
+    return 0; 
+  }
 
   // 2. Get a free node from the pool
-  if (free_nodes == 0) { release(&shmem_system.lock); return 0; }
+  if (free_nodes == 0) { 
+    release(&shmem_system.lock); 
+    return 0; 
+  }
   struct shmem_region *sr = free_nodes;
   free_nodes = free_nodes->next;
 
@@ -766,7 +774,8 @@ mmap(void)
   sr->pa = (uint64)kalloc();
   if (sr->pa == 0)
   {
-    sr->next = free_nodes; free_nodes = sr; // return node
+    sr->next = free_nodes; 
+    free_nodes = sr; // return node
     release(&shmem_system.lock);
     return 0;
   }

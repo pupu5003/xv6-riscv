@@ -156,7 +156,7 @@ static int syscall_nargs[] = {
     [SYS_close] 1,
     [SYS_getprocs] 2,
     [SYS_trace] 1,
-    [SYS_mmap] 2, // address and length
+    [SYS_mmap] 0,
     [SYS_munmap] 1, // address
 };
 
