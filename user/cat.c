@@ -56,6 +56,7 @@ int readline(int fd, char *buf, int maxlen)
   buf[i] = '\0';
   return i;
 }
+
 void cat_with_line(int fd)
 {
   int cnt = 0;
