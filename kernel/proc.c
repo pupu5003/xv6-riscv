@@ -713,13 +713,16 @@ void procdump(void)
 }
 
 // Get process info for up to max processes
+// addr is the address of an array of procinfo structures in user space
+// Returns the number of processes copied, or -1 on error
 int getprocs(uint64 addr, int max)
 {
-  struct proc *p;
-  struct procinfo info;
-  int count = 0;
+  struct proc *p; // pointer to iterate through process table
+  struct procinfo info; // temporary struct to hold process info before copying to user space
+  int count = 0; // count of processes copied
 
-  for (p = proc; p < &proc[NPROC] && count < max; p++)
+  for (p = proc; p < &proc[NPROC] && count < max; p++) 
+  // iterate through process table until we reach the end or have copied max processes
   {
     acquire(&p->lock);
 
@@ -730,6 +733,11 @@ int getprocs(uint64 addr, int max)
       info.sz = p->sz;
       safestrcpy(info.name, p->name, sizeof(info.name));
 
+      // copy process info to user space at the correct offset for this process
+      // myproc()->pagetable is the page table of the calling process, which is where we want to copy the info to
+      // addr + count * sizeof(info) is the address in user space where we want to copy the info for this process
+      // (char *)&info is the source address in kernel space where the process info is stored
+      // sizeof(info) is the number of bytes to copy
       if (copyout(myproc()->pagetable, addr + count * sizeof(info),
                   (char *)&info, sizeof(info)) < 0)
       {

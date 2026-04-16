@@ -49,9 +49,11 @@ int readline(int fd, char *buf, int maxlen)
     buf[i] = c;
     ++i;
   }
+  
   // error
   if (((n == 0) && (i == 0)) || (n < 0))
     return n;
+  
   // if ok
   buf[i] = '\0';
   return i;

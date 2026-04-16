@@ -10,9 +10,9 @@ statename(int s)
     switch(s){
         case 0: return "unused";
         case 1: return "used";
-        case 2: return "sleep";
-        case 3: return "ready";
-        case 4: return "run";
+        case 2: return "sleeping";
+        case 3: return "runnable";
+        case 4: return "running";
         case 5: return "zombie";
     }
     return "unknown";
@@ -42,3 +42,10 @@ main(void)
     }
     exit(0);
 }
+
+/*
+At the time ps is printing, it is also see itself in the process table, so it will print its own information as well. 
+The state of the ps process may be "running" or "runnable" depending on whether it is currently running or waiting to run. 
+The size of the ps process will depend on how much memory it is using at the time, which can vary. 
+The name of the process will be "ps" since that is the name of the executable being run.
+*/
