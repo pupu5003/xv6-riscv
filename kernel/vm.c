@@ -774,7 +774,7 @@ mmap(void)
   sr->pa = (uint64)kalloc();
   if (sr->pa == 0)
   {
-    sr->next = free_nodes; 
+    sr->next = free_nodes;
     free_nodes = sr; // return node
     release(&shmem_system.lock);
     return 0;
@@ -827,7 +827,8 @@ munmap(uint64 va)
   }
 
   // Clear the PTE (removes the mapping from this process)
-  *pte = 0;
+  // *pte = 0;
+  uvmunmap(p->pagetable, va, 1, 0);
 
   sr->refcount--;
   if (sr->refcount == 0)
